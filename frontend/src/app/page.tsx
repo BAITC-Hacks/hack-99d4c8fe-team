@@ -1,0 +1,647 @@
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import {
+  ArrowRight,
+  ArrowUpRight,
+  Check,
+  Grid2X2,
+  Menu,
+  Plus,
+  Search,
+  SlidersHorizontal,
+  Sparkles,
+  X,
+} from 'lucide-react';
+import { sampleTasks, taskCategories } from '@/features/tasks/data';
+import { TaskCard } from '@/features/tasks/components/TaskCard';
+import { TaskBuilder } from '@/features/tasks/components/TaskBuilder';
+import { TaskDetails, TeamResponseForm } from '@/features/tasks/components/TaskDetails';
+import { TaskEditor } from '@/features/tasks/components/TaskEditor';
+import { getReadiness } from '@/features/tasks/lib/rating';
+import { deleteTaskFromApi, fetchPublishedTasks } from '@/features/tasks/lib/api';
+import type { Task, TeamResponse } from '@/features/tasks/types';
+
+const categories = ['Все темы', ...taskCategories];
+const sortOptions = [
+  { value: 'rating-desc', label: 'Рейтинг: сначала высокий' },
+  { value: 'rating-asc', label: 'Рейтинг: сначала низкий' },
+  { value: 'newest', label: 'Сначала новые' },
+  { value: 'responses', label: 'Больше откликов' },
+];
+const readinessOptions = [
+  { value: 'all', label: 'Любая готовность' },
+  { value: 'idea', label: 'Идея · 0–39' },
+  { value: 'developing', label: 'В проработке · 40–69' },
+  { value: 'ready', label: 'Готова · 70–100' },
+];
+function Logo() {
+  return (
+    <span className="logo">
+      <span className="logo-mark">
+        <Sparkles size={20} />
+      </span>
+      искра<span className="logo-dot">.</span>
+    </span>
+  );
+}
+
+export default function Home() {
+  const [tasks, setTasks] = useState<Task[]>(sampleTasks);
+  const [view, setView] = useState<'home' | 'catalog' | 'mine'>('home');
+  const [category, setCategory] = useState('Все темы');
+  const [readiness, setReadiness] = useState('all');
+  const [sortBy, setSortBy] = useState('rating-desc');
+  const [search, setSearch] = useState('');
+  const [builderOpen, setBuilderOpen] = useState(false);
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [respondingTask, setRespondingTask] = useState<Task | null>(null);
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [toast, setToast] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      let local: Task[] = [];
+      try {
+        const stored = localStorage.getItem('iskra-tasks-v2');
+        if (stored) local = JSON.parse(stored);
+      } catch {
+        /* use sample data */
+      }
+      if (active) setTasks([...local, ...sampleTasks]);
+      try {
+        const remote = await fetchPublishedTasks();
+        if (active && remote.length) {
+          const localById = new Map(local.map((task) => [task.id, task]));
+          const merged = remote.map((task) => localById.get(task.id) || task);
+          const remoteIds = new Set(remote.map((task) => task.id));
+          setTasks([...local.filter((task) => !remoteIds.has(task.id)), ...merged, ...sampleTasks]);
+        }
+      } catch {
+        /* API is optional for viewing the demo catalog. */
+      }
+    };
+    void load();
+    return () => {
+      active = false;
+    };
+  }, []);
+  const saveTasks = (next: Task[]) => {
+    setTasks(next);
+    localStorage.setItem(
+      'iskra-tasks-v2',
+      JSON.stringify(next.filter((task) => !task.id.startsWith('sample-'))),
+    );
+  };
+  const visibleTasks = useMemo(() => {
+    const filtered = tasks.filter(
+      (task) =>
+        task.published &&
+        (category === 'Все темы' || task.category === category) &&
+        (readiness === 'all' || getReadiness(task.rating) === readiness) &&
+        (!search ||
+          `${task.title} ${task.context} ${task.need} ${task.category}`
+            .toLowerCase()
+            .includes(search.toLowerCase())),
+    );
+    return filtered.sort((a, b) =>
+      sortBy === 'rating-asc'
+        ? a.rating - b.rating
+        : sortBy === 'newest'
+          ? (b.createdAt || '').localeCompare(a.createdAt || '')
+          : sortBy === 'responses'
+            ? b.responses.length - a.responses.length
+            : b.rating - a.rating,
+    );
+  }, [tasks, category, readiness, search, sortBy]);
+  const myTasks = tasks.filter((task) => task.author === 'Вы');
+  const publishTask = (task: Task) => {
+    const next = [task, ...tasks];
+    saveTasks(next);
+    setBuilderOpen(false);
+    setView('catalog');
+    setSelectedTask(task);
+    setToast('Задача опубликована в общем каталоге');
+    window.setTimeout(() => setToast(''), 3500);
+  };
+  const deleteTask = async (task: Task) => {
+    if (!window.confirm(`Удалить задачу «${task.title}»? Это действие нельзя отменить.`)) return;
+    try {
+      if (task.backendManaged) await deleteTaskFromApi(task.id);
+      saveTasks(tasks.filter((item) => item.id !== task.id));
+      setSelectedTask(null);
+      setToast('Задача удалена');
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : 'Не удалось удалить задачу');
+    }
+    window.setTimeout(() => setToast(''), 4500);
+  };
+  const saveEditedTask = (task: Task) => {
+    saveTasks(tasks.map((item) => (item.id === task.id ? task : item)));
+    setEditingTask(null);
+    setSelectedTask(task);
+    setToast('Изменения сохранены, рейтинг пересчитан');
+    window.setTimeout(() => setToast(''), 3500);
+  };
+  const submitResponse = (response: TeamResponse) => {
+    if (!respondingTask) return;
+    const next = tasks.map((task) =>
+      task.id === respondingTask.id ? { ...task, responses: [...task.responses, response] } : task,
+    );
+    saveTasks(next);
+    setRespondingTask(null);
+    setToast('Отклик отправлен автору задачи');
+    window.setTimeout(() => setToast(''), 3500);
+  };
+  const updateResponseStatus = (
+    taskId: string,
+    responseId: string,
+    status: TeamResponse['status'],
+  ) => {
+    const next = tasks.map((task) =>
+      task.id === taskId
+        ? {
+            ...task,
+            responses: task.responses.map((response) =>
+              response.id === responseId ? { ...response, status } : response,
+            ),
+          }
+        : task,
+    );
+    saveTasks(next);
+    setSelectedTask(next.find((task) => task.id === taskId) || null);
+  };
+  const nav = (next: 'home' | 'catalog' | 'mine') => {
+    setView(next);
+    setMenuOpen(false);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  const openResponses = (task: Task) => {
+    setSelectedTask(task);
+  };
+  return (
+    <div className="site-shell">
+      <header className="site-header">
+        <div className="header-inner">
+          <button className="logo-button" onClick={() => nav('home')}>
+            <Logo />
+          </button>
+          <nav className="top-nav">
+            <button className={view === 'home' ? 'active' : ''} onClick={() => nav('home')}>
+              Главная
+            </button>
+            <button className={view === 'catalog' ? 'active' : ''} onClick={() => nav('catalog')}>
+              Каталог задач
+            </button>
+            <button className={view === 'mine' ? 'active' : ''} onClick={() => nav('mine')}>
+              Мои задачи
+            </button>
+          </nav>
+          <div className="header-actions">
+            <button className="header-link" onClick={() => nav('catalog')}>
+              Для команд <ArrowUpRight size={15} />
+            </button>
+            <button className="primary-button small" onClick={() => setBuilderOpen(true)}>
+              Создать задачу <Plus size={17} />
+            </button>
+          </div>
+          <button
+            className="mobile-menu-btn"
+            onClick={() => setMenuOpen(!menuOpen)}
+            aria-label="Открыть меню"
+          >
+            {menuOpen ? <X /> : <Menu />}
+          </button>
+        </div>
+        {menuOpen && (
+          <div className="mobile-menu">
+            <button onClick={() => nav('home')}>Главная</button>
+            <button onClick={() => nav('catalog')}>Каталог задач</button>
+            <button onClick={() => nav('mine')}>Мои задачи</button>
+            <button
+              onClick={() => {
+                setBuilderOpen(true);
+                setMenuOpen(false);
+              }}
+            >
+              Создать задачу
+            </button>
+          </div>
+        )}
+      </header>
+      {view === 'home' && (
+        <main>
+          <section className="hero">
+            <div className="hero-inner">
+              <div className="hero-copy">
+                <span className="eyebrow">ЗАДАЧИ БИЗНЕСА · ИДЕИ СТУДЕНТОВ</span>
+                <h1>
+                  Серьёзные задачи.
+                  <br />
+                  Свежий взгляд<span className="gradient-text"> вместе.</span>
+                </h1>
+                <p>
+                  Бизнес публикует понятные задачи, а студенческие команды предлагают идеи, планы и
+                  прототипы. Решение о сотрудничестве всегда остаётся за автором.
+                </p>
+                <div className="hero-actions">
+                  <button className="primary-button" onClick={() => nav('catalog')}>
+                    Найти задачу <ArrowUpRight size={18} />
+                  </button>
+                  <button className="outline-button" onClick={() => setBuilderOpen(true)}>
+                    Создать карточку <ArrowRight size={18} />
+                  </button>
+                </div>
+                <div className="hero-social">
+                  <div className="avatar-stack">
+                    <span>Б</span>
+                    <span>С</span>
+                    <span>К</span>
+                  </div>
+                  <div>
+                    <strong>Идеи встречаются с реальными задачами</strong>
+                    <small>Открытый каталог для команд и бизнеса</small>
+                  </div>
+                </div>
+              </div>
+              <div className="hero-visual">
+                <div className="hero-orbit orbit-one" />
+                <div className="hero-orbit orbit-two" />
+                <div className="hero-glow" />
+                <div className="big-spark">
+                  <Sparkles size={125} />
+                </div>
+                <div className="floating-label label-top">
+                  <span className="label-icon purple">
+                    <Check size={18} />
+                  </span>
+                  <span>
+                    Задача понятна<small>Есть критерии успеха</small>
+                  </span>
+                </div>
+                <div className="floating-label label-bottom">
+                  <span className="label-icon purple">
+                    <Grid2X2 size={18} />
+                  </span>
+                  <span>
+                    Команда предлагает<small>Решение и план</small>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </section>
+          <section className="stats-strip">
+            <div>
+              <strong>
+                От постановки задачи до <span>ручного выбора команды</span>
+              </strong>
+              <p>Публикация не назначает исполнителей автоматически.</p>
+            </div>
+            <div className="stats-items">
+              <div>
+                <strong>01</strong>
+                <span>Опишите задачу</span>
+              </div>
+              <div>
+                <strong>02</strong>
+                <span>Сравните предложения</span>
+              </div>
+              <div>
+                <strong>03</strong>
+                <span>Выберите команду</span>
+              </div>
+            </div>
+          </section>
+          <section className="featured-section">
+            <div className="section-heading">
+              <div>
+                <span className="section-kicker">ОТКРЫТЫЕ ВОЗМОЖНОСТИ</span>
+                <h2>
+                  Задачи, которым нужны <em>идеи</em>
+                </h2>
+                <p>Каталог открыт всем командам. Смотрите рейтинг и предлагайте свой подход.</p>
+              </div>
+              <button className="text-link" onClick={() => nav('catalog')}>
+                Весь каталог <ArrowUpRight size={18} />
+              </button>
+            </div>
+            <div className="card-grid">
+              {visibleTasks.slice(0, 3).map((task) => (
+                <TaskCard
+                  key={task.id}
+                  task={task}
+                  onOpen={setSelectedTask}
+                  onRespond={setRespondingTask}
+                />
+              ))}
+            </div>
+          </section>
+          <section className="how-section">
+            <div className="how-heading">
+              <span className="section-kicker">ПОНЯТНЫЙ ПРОЦЕСС</span>
+              <h2>
+                Хорошее сотрудничество начинается
+                <br />
+                <em>с ясной задачи</em>
+              </h2>
+            </div>
+            <div className="how-grid">
+              <div>
+                <span className="step-icon peach-icon">01</span>
+                <b>БИЗНЕС</b>
+                <h3>Опишите потребность</h3>
+                <p>
+                  Пройдите три раунда уточнений, проверьте поля и рейтинг готовности, затем
+                  подтвердите карточку.
+                </p>
+              </div>
+              <div>
+                <span className="step-icon lavender-icon">02</span>
+                <b>КОМАНДА</b>
+                <h3>Предложите решение</h3>
+                <p>
+                  Отправьте идею, план работы и ссылку на прототип. Количество откликов не
+                  ограничено.
+                </p>
+              </div>
+              <div>
+                <span className="step-icon green-icon">03</span>
+                <b>ВЫБОР БИЗНЕСА</b>
+                <h3>Решение за автором</h3>
+                <p>Автор сравнивает предложения и вручную выбирает или отклоняет каждую команду.</p>
+              </div>
+            </div>
+          </section>
+          <section className="cta-section">
+            <div>
+              <span className="section-kicker">НАЧНИТЕ СЕЙЧАС</span>
+              <h2>Какая задача ждёт свежего взгляда?</h2>
+              <p>Опишите её, уточните детали и пригласите команды к сотрудничеству.</p>
+            </div>
+            <button className="white-button" onClick={() => setBuilderOpen(true)}>
+              Создать карточку <ArrowUpRight size={18} />
+            </button>
+          </section>
+        </main>
+      )}
+      {view === 'catalog' && (
+        <main className="catalog-layout">
+          <aside className="sidebar">
+            <div className="sidebar-group">
+              <small>КАТАЛОГ</small>
+              <button
+                className="selected"
+                onClick={() => {
+                  setCategory('Все темы');
+                  setReadiness('all');
+                }}
+              >
+                <Grid2X2 size={18} /> Все задачи{' '}
+                <span>{tasks.filter((task) => task.published).length}</span>
+              </button>
+            </div>
+            <div className="sidebar-group">
+              <small>ТЕМАТИКА</small>
+              {categories.map((item) => (
+                <button
+                  key={item}
+                  className={category === item ? 'selected' : ''}
+                  onClick={() => setCategory(item)}
+                >
+                  <span className="category-dot" />
+                  {item}
+                </button>
+              ))}
+            </div>
+            <div className="sidebar-group">
+              <small>УРОВЕНЬ ГОТОВНОСТИ</small>
+              {readinessOptions.map((item) => (
+                <button
+                  key={item.value}
+                  className={readiness === item.value ? 'selected' : ''}
+                  onClick={() => setReadiness(item.value)}
+                >
+                  <span className="category-dot" />
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            <div className="sidebar-promo">
+              <span>
+                <Sparkles size={21} />
+              </span>
+              <h3>Есть задача?</h3>
+              <p>Три раунда уточнений помогут подготовить карточку для команд.</p>
+              <button onClick={() => setBuilderOpen(true)}>
+                Создать задачу <ArrowUpRight size={16} />
+              </button>
+            </div>
+          </aside>
+          <div className="catalog-content">
+            <div className="catalog-header">
+              <div>
+                <span className="section-kicker">ПУБЛИЧНЫЙ КАТАЛОГ</span>
+                <h1>
+                  Найдите задачу
+                  <br />
+                  <em>для своей команды</em>
+                  <span className="period">.</span>
+                </h1>
+                <p>Опубликованные задачи доступны всем. Сортировка — по рейтингу готовности.</p>
+              </div>
+              <div className="catalog-art">
+                <Sparkles size={62} />
+              </div>
+            </div>
+            <div className="toolbar">
+              <div className="search-box">
+                <Search size={19} />
+                <input
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Поиск по названию, описанию или теме..."
+                  aria-label="Поиск задач"
+                />
+                {search && (
+                  <button onClick={() => setSearch('')} aria-label="Очистить">
+                    <X size={16} />
+                  </button>
+                )}
+              </div>
+              <label className="sort-box">
+                <SlidersHorizontal size={17} />
+                <select
+                  aria-label="Сортировка задач"
+                  value={sortBy}
+                  onChange={(event) => setSortBy(event.target.value)}
+                >
+                  {sortOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="mobile-filters">
+              {categories.map((item) => (
+                <button
+                  key={item}
+                  className={category === item ? 'active' : ''}
+                  onClick={() => setCategory(item)}
+                >
+                  {item}
+                </button>
+              ))}
+              <select
+                aria-label="Фильтр готовности"
+                value={readiness}
+                onChange={(event) => setReadiness(event.target.value)}
+              >
+                {readinessOptions.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                aria-label="Сортировка задач"
+                value={sortBy}
+                onChange={(event) => setSortBy(event.target.value)}
+              >
+                {sortOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {visibleTasks.length ? (
+              <div className="card-grid catalog-grid">
+                {visibleTasks.map((task) => (
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    onOpen={setSelectedTask}
+                    onRespond={setRespondingTask}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="empty-state">
+                <Search size={32} />
+                <h3>Задач по этим условиям нет</h3>
+                <p>Измените фильтры или поисковый запрос.</p>
+                <button
+                  className="outline-button"
+                  onClick={() => {
+                    setSearch('');
+                    setCategory('Все темы');
+                    setReadiness('all');
+                  }}
+                >
+                  Сбросить фильтры
+                </button>
+              </div>
+            )}
+          </div>
+        </main>
+      )}
+      {view === 'mine' && (
+        <main className="catalog-content mine-page">
+          <div className="catalog-header">
+            <div>
+              <span className="section-kicker">ПАНЕЛЬ АВТОРА</span>
+              <h1>
+                Мои задачи<span className="period">.</span>
+              </h1>
+              <p>
+                Просматривайте отклики команд и вручную принимайте решение по каждому предложению.
+              </p>
+            </div>
+            <div className="catalog-art">
+              <Grid2X2 size={56} />
+            </div>
+          </div>
+          {myTasks.length ? (
+            <div className="card-grid catalog-grid mine-grid">
+              {myTasks.map((task) => (
+                <TaskCard
+                  key={task.id}
+                  task={task}
+                  onOpen={openResponses}
+                  onRespond={() => openResponses(task)}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <Grid2X2 size={32} />
+              <h3>У вас пока нет задач</h3>
+              <p>Опубликуйте карточку, чтобы получать идеи от команд.</p>
+              <button className="primary-button" onClick={() => setBuilderOpen(true)}>
+                Создать первую задачу <Plus size={17} />
+              </button>
+            </div>
+          )}
+        </main>
+      )}
+      <footer>
+        <div className="footer-main">
+          <Logo />
+          <span>Понятные задачи. Осмысленные решения.</span>
+          <div>
+            <button onClick={() => nav('home')}>Главная</button>
+            <button onClick={() => nav('catalog')}>Каталог задач</button>
+            <button onClick={() => setBuilderOpen(true)}>Создать задачу</button>
+          </div>
+        </div>
+        <div className="footer-bottom">
+          <span>© {new Date().getFullYear()} Искра</span>
+          <span>Решения выбирает автор задачи.</span>
+        </div>
+      </footer>
+      {builderOpen && <TaskBuilder onClose={() => setBuilderOpen(false)} onPublish={publishTask} />}
+      {selectedTask && (
+        <TaskDetails
+          task={tasks.find((task) => task.id === selectedTask.id) || selectedTask}
+          onClose={() => setSelectedTask(null)}
+          onRespond={(task) => {
+            setSelectedTask(null);
+            setRespondingTask(task);
+          }}
+          onResponseStatus={(responseId, status) =>
+            updateResponseStatus(selectedTask.id, responseId, status)
+          }
+          onEdit={(task) => {
+            setSelectedTask(null);
+            setEditingTask(task);
+          }}
+          onDelete={deleteTask}
+        />
+      )}
+      {editingTask && (
+        <TaskEditor
+          task={editingTask}
+          onClose={() => setEditingTask(null)}
+          onSave={saveEditedTask}
+        />
+      )}
+      {respondingTask && (
+        <TeamResponseForm
+          task={respondingTask}
+          onClose={() => setRespondingTask(null)}
+          onSubmit={submitResponse}
+        />
+      )}
+      {toast && (
+        <div className="toast">
+          <Check size={17} />
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}

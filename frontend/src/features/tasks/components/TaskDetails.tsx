@@ -1,0 +1,250 @@
+import { useState } from 'react';
+import { ArrowUpRight, Check, CircleHelp, X } from 'lucide-react';
+import type { Task, TaskFields, TeamResponse } from '../types';
+import { RatingBreakdown } from './RatingBreakdown';
+import { categoryTone } from '../data';
+
+const labels: [keyof TaskFields, string][] = [
+  ['context', 'Контекст'],
+  ['need', 'Потребность'],
+  ['users', 'Пользователи'],
+  ['data', 'Данные и материалы'],
+  ['constraints', 'Ограничения'],
+  ['expectedResult', 'Ожидаемый результат'],
+  ['successCriteria', 'Критерии успеха'],
+  ['contact', 'Контакт'],
+  ['collaboration', 'Формат взаимодействия'],
+];
+export function TaskDetails({
+  task,
+  onClose,
+  onResponseStatus,
+  onRespond,
+  onEdit,
+  onDelete,
+}: {
+  task: Task;
+  onClose: () => void;
+  onResponseStatus: (responseId: string, status: TeamResponse['status']) => void;
+  onRespond: (task: Task) => void;
+  onEdit: (task: Task) => void;
+  onDelete: (task: Task) => void;
+}) {
+  const [showResponses, setShowResponses] = useState(false);
+  const isOwn = task.author === 'Вы';
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div
+        className="detail-modal task-detail-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={task.title}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button className="close-button" onClick={onClose} aria-label="Закрыть">
+          <X size={21} />
+        </button>
+        <div className={`detail-art ${categoryTone(task.category)}`}>
+          <span>✳</span>
+        </div>
+        <div className="detail-body">
+          <span className="section-kicker">
+            {task.category} · АВТОР: {task.author}
+          </span>
+          <h2>{task.title}</h2>
+          <div className="task-score-line">
+            <b>{task.rating}/100</b>
+            <span>Оценка готовности · {task.responses.length} откликов</span>
+          </div>
+          <RatingBreakdown fields={task} scoreOverride={task.rating} />
+          <div className="detail-fields">
+            {labels.map(([key, label]) => (
+              <section key={key}>
+                <h3>{label}</h3>
+                <p>
+                  {task[key] || (
+                    <span className="empty-field">
+                      <CircleHelp size={14} /> Автор пока не добавил эти сведения
+                    </span>
+                  )}
+                </p>
+              </section>
+            ))}
+          </div>
+          {isOwn && (
+            <section className="responses-section">
+              <div className="responses-heading">
+                <h3>Предложения команд ({task.responses.length})</h3>
+                <button className="text-link" onClick={() => setShowResponses(!showResponses)}>
+                  {showResponses ? 'Свернуть' : 'Показать'}
+                </button>
+              </div>
+              {showResponses &&
+                (task.responses.length ? (
+                  task.responses.map((response) => (
+                    <article className="response-card" key={response.id}>
+                      <div className="response-top">
+                        <strong>{response.teamName}</strong>
+                        <span className={`response-status ${response.status}`}>
+                          {response.status === 'pending'
+                            ? 'Ожидает решения'
+                            : response.status === 'accepted'
+                              ? 'Выбрано'
+                              : 'Отклонено'}
+                        </span>
+                      </div>
+                      <h4>Идея решения</h4>
+                      <p>{response.idea}</p>
+                      <h4>План команды</h4>
+                      <p>{response.plan}</p>
+                      {response.prototypeUrl && (
+                        <a href={response.prototypeUrl} target="_blank" rel="noreferrer">
+                          Открыть прототип <ArrowUpRight size={14} />
+                        </a>
+                      )}
+                      {response.status === 'pending' && (
+                        <div className="response-actions">
+                          <button
+                            className="reject-button"
+                            onClick={() => onResponseStatus(response.id, 'rejected')}
+                          >
+                            <X size={15} /> Отклонить
+                          </button>
+                          <button
+                            className="accept-button"
+                            onClick={() => onResponseStatus(response.id, 'accepted')}
+                          >
+                            <Check size={15} /> Выбрать команду
+                          </button>
+                        </div>
+                      )}
+                    </article>
+                  ))
+                ) : (
+                  <p className="muted-copy">
+                    Откликов пока нет. Когда команды предложат решения, вы сможете выбрать или
+                    отклонить каждое вручную.
+                  </p>
+                ))}
+            </section>
+          )}
+          <div className="detail-actions">
+            {isOwn ? (
+              <>
+                <button className="outline-button" onClick={() => onEdit(task)}>
+                  Редактировать задачу
+                </button>
+                <button className="outline-button" onClick={() => setShowResponses(true)}>
+                  Отклики ({task.responses.length})
+                </button>
+                <button className="delete-task-button" onClick={() => onDelete(task)}>
+                  <X size={15} /> Удалить задачу
+                </button>
+              </>
+            ) : (
+              <button className="primary-button" onClick={() => onRespond(task)}>
+                Предложить решение <ArrowUpRight size={18} />
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function TeamResponseForm({
+  task,
+  onClose,
+  onSubmit,
+}: {
+  task: Task;
+  onClose: () => void;
+  onSubmit: (response: TeamResponse) => void;
+}) {
+  const [teamName, setTeamName] = useState('');
+  const [idea, setIdea] = useState('');
+  const [plan, setPlan] = useState('');
+  const [prototypeUrl, setPrototypeUrl] = useState('');
+  const [error, setError] = useState('');
+  const submit = () => {
+    if (!teamName.trim() || !idea.trim() || !plan.trim()) {
+      setError('Укажите команду, идею решения и план.');
+      return;
+    }
+    onSubmit({
+      id: `response-${Date.now()}`,
+      teamName: teamName.trim(),
+      idea: idea.trim(),
+      plan: plan.trim(),
+      prototypeUrl: prototypeUrl.trim(),
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    });
+  };
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div
+        className="response-form-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Отклик команды"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button className="close-button" onClick={onClose} aria-label="Закрыть">
+          <X size={21} />
+        </button>
+        <span className="section-kicker">ОТКЛИК КОМАНДЫ</span>
+        <h2>Предложите решение</h2>
+        <p className="muted-copy">
+          Задача: <strong>{task.title}</strong>. Автор рассмотрит отклик и сам решит, с кем
+          работать.
+        </p>
+        <label>
+          Название команды
+          <input
+            value={teamName}
+            onChange={(e) => setTeamName(e.target.value)}
+            placeholder="Например, Команда Пульс"
+          />
+        </label>
+        <label>
+          Идея решения
+          <textarea
+            rows={3}
+            value={idea}
+            onChange={(e) => setIdea(e.target.value)}
+            placeholder="Какой подход вы предлагаете?"
+          />
+        </label>
+        <label>
+          План работы
+          <textarea
+            rows={3}
+            value={plan}
+            onChange={(e) => setPlan(e.target.value)}
+            placeholder="Основные этапы, роли и сроки..."
+          />
+        </label>
+        <label>
+          Ссылка на прототип <span className="optional">необязательно</span>
+          <input
+            type="url"
+            value={prototypeUrl}
+            onChange={(e) => setPrototypeUrl(e.target.value)}
+            placeholder="https://..."
+          />
+        </label>
+        {error && <p className="form-error">{error}</p>}
+        <div className="form-footer">
+          <button className="back-button" onClick={onClose}>
+            Отмена
+          </button>
+          <button className="primary-button" onClick={submit}>
+            Отправить отклик <ArrowUpRight size={18} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
