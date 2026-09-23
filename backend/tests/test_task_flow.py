@@ -1,21 +1,19 @@
 from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app, drafts, tasks
+from app.main import app
 from app.schemas import AIAssessmentResult, AIQuestionsResult, Question, TaskFields
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
-    drafts.clear()
-    tasks.clear()
+def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "test.db"))
     with TestClient(app) as test_client:
         yield test_client
-    drafts.clear()
-    tasks.clear()
 
 
 def questions_for_round(_draft: dict[str, object], round_number: int) -> AIQuestionsResult:
@@ -122,3 +120,153 @@ def test_model_json_parser_accepts_fences_and_short_preamble() -> None:
 
     result = _json_from_model('Ответ:\n```json\n{"ready": true}\n```')
     assert result == {"ready": True}
+
+
+def test_no_key_completes_three_blocks_without_openai(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AI_MODE", "auto")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    start = client.post(
+        "/api/task-drafts",
+        json={
+            "title": "Community garden",
+            "description": "Help make a shared garden for residents",
+            "category": "Ecology",
+        },
+    )
+    assert start.status_code == 200
+    draft_id = start.json()["draftId"]
+    questions = start.json()["questions"]
+    for round_number in (1, 2, 3):
+        result = client.post(
+            f"/api/task-drafts/{draft_id}/answers",
+            json={
+                "round": round_number,
+                "answers": [
+                    {"questionId": question["id"], "answer": "Detailed example answer"}
+                    for question in questions
+                ],
+            },
+        )
+        assert result.status_code == 200
+        assert result.json()["ready"] is (round_number == 3)
+        questions = result.json().get("questions", [])
+    assert result.json()["rating"] == 100
+    publish = client.post(
+        f"/api/task-drafts/{draft_id}/publish",
+        json={
+            "category": "Ecology",
+            "fields": result.json()["taskFields"],
+            "finalText": result.json()["finalText"],
+            "useGeneratedText": True,
+        },
+    )
+    assert publish.status_code == 200
+    assert len(client.get("/api/tasks").json()["items"]) == 1
+
+
+def test_auto_mode_falls_back_when_provider_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.clarification import generate_questions
+
+    monkeypatch.setenv("AI_MODE", "auto")
+    monkeypatch.setenv("OPENAI_API_KEY", "server-key")
+    with patch("app.services.clarification.generate_with_openai", side_effect=OSError("offline")):
+        result = generate_questions({"title": "Title", "description": "Description"}, 1)
+    assert len(result.questions) == 2
+
+
+def test_shared_catalog_owner_actions_and_restart(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AI_MODE", "demo")
+    start = client.post(
+        "/api/task-drafts",
+        json={"title": "Local task", "description": "Shared task description", "category": "Tech"},
+    )
+    assert start.status_code == 200
+    draft_id = start.json()["draftId"]
+    questions = start.json()["questions"]
+    for round_number in (1, 2, 3):
+        step = client.post(
+            f"/api/task-drafts/{draft_id}/answers",
+            json={
+                "round": round_number,
+                "answers": [
+                    {"questionId": q["id"], "answer": f"Answer {round_number}"} for q in questions
+                ],
+            },
+        )
+        assert step.status_code == 200
+        questions = step.json().get("questions", [])
+    created = client.post(
+        f"/api/task-drafts/{draft_id}/publish",
+        json={
+            "category": "Tech",
+            "fields": step.json()["taskFields"],
+            "finalText": step.json()["finalText"],
+            "useGeneratedText": True,
+        },
+    )
+    task_id = created.json()["task"]["id"]
+
+    with TestClient(app) as another_browser:
+        listing = another_browser.get("/api/tasks").json()["items"]
+        assert listing[0]["id"] == task_id
+        assert listing[0]["author"] == "Автор задачи"
+        assert another_browser.delete(f"/api/tasks/{task_id}").status_code == 403
+        proposal = another_browser.post(
+            f"/api/tasks/{task_id}/responses",
+            json={"teamName": "Team", "idea": "Solution", "plan": "Plan"},
+        )
+        assert proposal.status_code == 200
+        response_id = proposal.json()["response"]["id"]
+        assert another_browser.get("/api/tasks").json()["items"][0]["responseCount"] == 1
+        assert another_browser.get("/api/tasks").json()["items"][0]["responses"] == []
+        assert (
+            another_browser.patch(
+                f"/api/tasks/{task_id}/responses/{response_id}", json={"status": "accepted"}
+            ).status_code
+            == 403
+        )
+
+    # A fresh app client with the same owner cookie sees data saved on disk.
+    with TestClient(app) as returning_owner:
+        returning_owner.cookies.update(client.cookies)
+        own_task = returning_owner.get("/api/tasks").json()["items"][0]
+        assert own_task["author"] == "Вы"
+        assert own_task["responses"][0]["idea"] == "Solution"
+        accepted = returning_owner.patch(
+            f"/api/tasks/{task_id}/responses/{response_id}", json={"status": "accepted"}
+        )
+        assert accepted.status_code == 200
+        fields = {
+            key: own_task[key]
+            for key in (
+                "title",
+                "context",
+                "need",
+                "users",
+                "data",
+                "constraints",
+                "expectedResult",
+                "successCriteria",
+                "contact",
+                "collaboration",
+            )
+        }
+        fields["users"] = ""
+        edited = returning_owner.patch(f"/api/tasks/{task_id}", json={"fields": fields})
+        assert edited.status_code == 200
+        assert edited.json()["task"]["rating"] < own_task["rating"]
+        assert returning_owner.delete(f"/api/tasks/{task_id}").status_code == 200
+    assert client.get("/api/tasks").json()["items"] == []
+
+
+def test_health_reports_database_misconfiguration(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path))
+    result = client.get("/api/health")
+    assert result.status_code == 503
+    assert "База данных" in result.json()["detail"]

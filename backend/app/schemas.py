@@ -1,4 +1,6 @@
-from pydantic import BaseModel, Field
+from urllib.parse import urlparse
+
+from pydantic import BaseModel, Field, field_validator
 
 
 class Question(BaseModel):
@@ -55,3 +57,26 @@ class AIAssessmentResult(BaseModel):
     taskFields: TaskFields | None = None
     rating: int | None = Field(default=None, ge=0, le=100)
     message: str | None = None
+
+
+class UpdateTaskRequest(BaseModel):
+    fields: TaskFields
+
+
+class TeamResponseRequest(BaseModel):
+    teamName: str = Field(min_length=1, max_length=160)
+    idea: str = Field(min_length=1, max_length=10000)
+    plan: str = Field(min_length=1, max_length=10000)
+    prototypeUrl: str = Field(default="", max_length=2000)
+
+    @field_validator("prototypeUrl")
+    @classmethod
+    def valid_prototype_url(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if value and (parsed.scheme not in {"http", "https"} or not parsed.netloc):
+            raise ValueError("Ссылка на прототип должна начинаться с https:// или http://.")
+        return value
+
+
+class ResponseStatusRequest(BaseModel):
+    status: str = Field(pattern="^(accepted|rejected)$")
