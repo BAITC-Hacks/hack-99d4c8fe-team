@@ -133,6 +133,12 @@ textarea:focus-visible {
   color: #453a62;
   white-space: nowrap;
 }
+
+.header-link:hover {
+  transform: translateY(-2px);
+  color: #7047e9
+}
+
 .primary-button {
   border: 0;
   background: #7047e9;

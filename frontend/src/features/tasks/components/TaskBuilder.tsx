@@ -387,7 +387,7 @@ export function TaskBuilder({
             </button>
             {stage === 'intro' ? (
               <button className="primary-button" disabled={loading} onClick={begin}>
-                {loading ? <LoaderCircle className="spin" size={18} /> : null}Отправить в backend{' '}
+                {loading ? <LoaderCircle className="spin" size={18} /> : null}Отправить{' '}
                 <ArrowRight size={18} />
               </button>
             ) : stage === 'questions' ? (
