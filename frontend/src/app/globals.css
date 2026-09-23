@@ -1080,7 +1080,16 @@ footer {
   max-height: min(90vh, 820px);
   overflow: auto;
   box-shadow: 0 28px 90px #21174955;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
+
+.form-modal::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 .close-button {
   position: absolute;
   right: 17px;
